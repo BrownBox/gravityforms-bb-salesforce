@@ -96,7 +96,8 @@ class GFBBSalesforce {
             add_filter('members_get_capabilities', array("GFBBSalesforce", "members_get_capabilities"));
 
         //handling post submission.
-        add_action("gform_after_submission", array('GFBBSalesforce', 'export'), 10, 2);
+//         add_action("gform_after_submission", array('GFBBSalesforce', 'export'), 10, 2);
+        add_action("gform_after_submission", array('GFBBSalesforce', 'send_to_salesforce'), 10, 2);
 
         add_action('gform_entry_info', array('GFBBSalesforce', 'entry_info_link_to_salesforce'), 10, 2);
     }
@@ -584,6 +585,48 @@ EOD;
             }
         }
         return $tag;
+    }
+
+    public static function send_to_salesforce($entry, $form) {
+        $objectIds = array();
+    	$sfData = array();
+    	foreach ($form['fields'] as $field) {
+    		if ($field['salesforceMapEnabled']) {
+    			$sfFields = $field['salesforceMapField'];
+    			if (!is_array($sfFields))
+    				$sfFields = array($sfFields);
+
+    			if (!empty($field['inputs'])) {
+    				$values = array();
+    				foreach ($field['inputs'] as $input) {
+    					if (!empty($entry[$input['id']]))
+    						$values[] = $entry[$input['id']];
+    				}
+    				$post_data = implode(';',$values);
+    			} else
+    				$post_data = $entry[$field['id']];
+
+    			if (!empty($post_data)) {
+    			    foreach ($sfFields as $sfField)
+    				    $sfData[$field['salesforceMapObject']][$sfField] = $post_data;
+    			}
+    		}
+    	}
+
+    	if (!empty($sfData)) {
+    		foreach ($sfData as $obj => $data) {
+    			if (array_key_exists($obj, $objectIds))
+    				$sfData[$obj]['ID'] = $objectIds[$obj];
+
+    			if ($obj == 'Contact') { // Set some default values for contacts
+    				$sfData[$obj]['s360a__EmailAddressPreferredType__c'] = 'Personal';
+    				$sfData[$obj]['s360a__AddressPrimaryActive__c'] = 'boolean:TRUE';
+    				$sfData[$obj]['s360a__AddressPrimaryPreferredMailingAddress__c'] = 'boolean:TRUE';
+    				$sfData[$obj]['s360a__AddressPrimaryPreferredStreetAddress__c'] = 'boolean:TRUE';
+    			}
+    		}
+    		$result = self::update_salesforce($sfData);
+    	}
     }
 
     public static function update_salesforce(array $data) {
