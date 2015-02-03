@@ -1,9 +1,9 @@
 <?php
 /*
 Plugin Name: Gravity Forms BrownBox Salesforce API Add-On
-Plugin URI: http://www.seodenver.com/salesforce/
+Plugin URI: http://brownbox.net.au
 Description: Integrates <a href="http://formplugin.com?r=salesforce">Gravity Forms</a> with Salesforce allowing form submissions to be automatically sent to your Salesforce account
-Version: 0.2
+Version: 0.3
 Author: Brownbox
 Author URI: http://brownbox.net.au
 
@@ -37,7 +37,7 @@ class GFBBSalesforce {
     private static $path = "gravity-forms-bb-salesforce/salesforce-api.php";
     private static $url = "http://formplugin.com";
     private static $slug = "gravity-forms-bb-salesforce";
-    private static $version = "0.2";
+    private static $version = "0.3";
     private static $min_gravityforms_version = "1.3.9";
     private static $is_debug = NULL;
     private static $cache_time = 86400; // 24 hours
@@ -78,7 +78,6 @@ class GFBBSalesforce {
 
         self::$settings = get_option("gf_bb_salesforce_settings");
         self::$apiurl = self::$settings['apiurl'];
-        // self::$apiurl='http://223.27.18.204:8080/';
         if (is_admin()) {
             //loading translations
             load_plugin_textdomain('gravity-forms-bb-salesforce', FALSE, '/gravity-forms-bb-salesforce/languages');
@@ -100,6 +99,11 @@ class GFBBSalesforce {
         add_action("gform_after_submission", array('GFBBSalesforce', 'send_to_salesforce'), 10, 2);
 
         add_action('gform_entry_info', array('GFBBSalesforce', 'entry_info_link_to_salesforce'), 10, 2);
+
+        // Salesforce logins
+        if (self::$settings['sf_login']) {
+            add_action('gform_validation_'.self::$settings['login_form'], array('GFBBSalesforce', 'login_via_salesforce'), 10, 2);
+        }
     }
 
     static function force_refresh_transients() {
@@ -111,7 +115,7 @@ class GFBBSalesforce {
         global $wpdb;
 
         if ($force || (isset($_GET['refresh']) && current_user_can('administrator') && $_GET['refresh'] === 'transients')) {
-            $wpdb->query("DELETE FROM {$wpdb->options} WHERE `option_name` LIKE '%_transient_sfgf_%' OR`option_name` LIKE '%_transient_timeout_sfgf_%' OR`option_name` LIKE '%sfgf_lists_fields_%'");
+            $wpdb->query("DELETE FROM {$wpdb->options} WHERE `option_name` LIKE '%_transient_sfgf_%' OR `option_name` LIKE '%_transient_timeout_sfgf_%' OR `option_name` LIKE '%sfgf_lists_fields_%'");
         }
     }
 
@@ -252,7 +256,12 @@ EOD;
                             "debug" => isset($_POST["gf_salesforce_debug"]),
                             "apiurl" => $_POST["gf_bb_salesforce_apiurl"],
                             "notifyemail" => trim(rtrim(esc_html($_POST["gf_salesforce_notifyemail"]))),
-                            'cache_time' => floatval($_POST["gf_salesforce_cache_time"])
+                            'cache_time' => floatval($_POST["gf_salesforce_cache_time"]),
+                            "sf_login" => isset($_POST["gf_bb_salesforce_login"]),
+                            'login_form' => $_POST["gf_bb_salesforce_login_form"],
+                            'login_username' => $_POST["gf_bb_salesforce_username"],
+                            'login_password' => $_POST["gf_bb_salesforce_password"],
+                            'salt_string' => $_POST["gf_bb_salesforce_saltstring"],
             );
             update_option("gf_bb_salesforce_settings", $settings);
         } else {
@@ -267,7 +276,12 @@ EOD;
                                                     "debug" => false,
                                                     'notify' => false,
                                                     "notifyemail" => '',
-                                                    'cache_time' => 86400
+                                                    'cache_time' => 86400,
+                                                    'sf_login' => false,
+                                                    'login_form' => '',
+                                                    'login_username' => 'Email',
+                                                    'login_password' => 'Website_Password__c',
+                                                    'salt_string' => substr("abcdefghijklmnopqrstuvwxyz", mt_rand(0, 25), 1).substr(md5(time()), 1, 9),
         ));
 
         $api = self::get_api($settings);
@@ -282,15 +296,15 @@ EOD;
         }
         ?>
 <form method="post" action="<?php echo remove_query_arg('refresh'); ?>">
-            <?php wp_nonce_field("update", "gf_salesforce_update")?>
-            <h3><?php _e("Salesforce Account Information", "gravity-forms-bb-salesforce") ?></h3>
+    <?php wp_nonce_field("update", "gf_salesforce_update")?>
+    <h3><?php _e("Salesforce Account Information", "gravity-forms-bb-salesforce") ?></h3>
     <table class="form-table">
         <tr>
             <th scope="row"><label for="gf_salesforce_securitytoken"><?php _e("Security Token", "gravity-forms-bb-salesforce"); ?></label></th>
             <td><input type="text" class="code" id="gf_salesforce_securitytoken" name="gf_salesforce_securitytoken" size="40" value="<?php echo !empty($settings["securitytoken"]) ? esc_attr($settings["securitytoken"]) : ''; ?>" /></td>
         </tr>
         <tr>
-            <th scope="row"><label for="gf_bb_salesforce_apiurl"><?php _e("BB Salesforce bridge api url", "gf_bb_salesforce_apiurl"); ?></label></th>
+            <th scope="row"><label for="gf_bb_salesforce_apiurl"><?php _e("BB Salesforce bridge api url", "gravity-forms-bb-salesforce"); ?></label></th>
             <td><input type="text" class="code" id="gf_salesforce_password" name="gf_bb_salesforce_apiurl" size="40" value="<?php echo !empty($settings["apiurl"]) ? esc_attr($settings["apiurl"]) : ''; ?>" /></td>
         </tr>
         <tr>
@@ -304,9 +318,7 @@ EOD;
             </td>
         </tr>
         <tr>
-            <th scope="row"><label for="gf_salesforce_cache_time"><?php _e("Remote Cache Time", "gravity-forms-bb-salesforce"); ?></label><span
-                class="howto"
-            ><?php _e("This is an advanced setting. You likely won't need to change this.", "gravity-forms-bb-salesforce"); ?></span></th>
+            <th scope="row"><label for="gf_salesforce_cache_time"><?php _e("Remote Cache Time", "gravity-forms-bb-salesforce"); ?></label><span class="howto"><?php _e("This is an advanced setting. You likely won't need to change this.", "gravity-forms-bb-salesforce"); ?></span></th>
             <td><select name="gf_salesforce_cache_time" id="gf_salesforce_cache_time">
                     <option value="60" <?php selected($settings["cache_time"] == '60', true); ?>><?php _e('One Minute (for testing only!)', 'gravity-forms-bb-salesforce'); ?></option>
                     <option value="3600" <?php selected($settings["cache_time"] == '3600', true); ?>><?php _e('One Hour', 'gravity-forms-bb-salesforce'); ?></option>
@@ -323,10 +335,48 @@ EOD;
             </td>
         </tr>
         <tr>
+            <th scope="row"><label for="gf_bb_salesforce_login"><?php _e("Use Salesforce for Wordpress logins", "gravity-forms-bb-salesforce"); ?></label></th>
+            <td><input type="checkbox" id="gf_bb_salesforce_login" name="gf_bb_salesforce_login" size="40" value="1" <?php checked($settings["sf_login"], true); ?> onclick="ToggleLoginEntry();"><br>
+            <span class="howto"><?php _e("Use a Gravity Form to allow users to log in from the front-end of the site using credentials stored in Salesforce. Admin login will still use the standard Wordpress login function.", "gravity-forms-bb-salesforce"); ?></span></td>
+        </tr>
+        <tr class="child_setting_row login_setting_row">
+            <th scope="row"><label for="gf_bb_salesforce_login_form"><?php _e("Login Form", "gravity-forms-bb-salesforce"); ?></label></th>
+            <td><select name="gf_bb_salesforce_login_form" id="gf_bb_salesforce_login_form">
+                    <option value="" <?php selected($settings['login_form'] == '', true); ?>><?php _e('Please Select', 'gravity-forms-bb-salesforce'); ?></option>
+<?php
+                    $forms = RGFormsModel::get_forms(null, 'title');
+                    foreach($forms as $form)
+                        echo '<option value="'.$form->id.'" '.selected($settings['login_form'] == $form->id, true).'>'.$form->title.'</option>'."\n";
+?>
+                </select>
+            </td>
+        </tr>
+        <tr class="child_setting_row login_setting_row">
+            <th scope="row"><label for="gf_bb_salesforce_username"><?php _e("Salesforce Username Field", "gravity-forms-bb-salesforce"); ?></label></th>
+            <td><input type="text" class="code" id="gf_bb_salesforce_username" name="gf_bb_salesforce_username" size="40" value="<?php echo !empty($settings["login_username"]) ? esc_attr($settings["login_username"]) : ''; ?>" /></td>
+        </tr>
+        <tr class="child_setting_row login_setting_row">
+            <th scope="row"><label for="gf_bb_salesforce_password"><?php _e("Salesforce Password Field", "gravity-forms-bb-salesforce"); ?></label></th>
+            <td><input type="text" class="code" id="gf_salesforce_password" name="gf_bb_salesforce_password" size="40" value="<?php echo !empty($settings["login_password"]) ? esc_attr($settings["login_password"]) : ''; ?>" /></td>
+        </tr>
+        <tr class="child_setting_row login_setting_row">
+            <th scope="row"><label for="gf_bb_salesforce_saltstring"><?php _e("Password Salt String", "gravity-forms-bb-salesforce"); ?></label><span class="howto"><?php _e("Changing this will INVALIDATE all current passwords in Salesforce. You probably really don't want to do that.", "gravity-forms-bb-salesforce"); ?></span></th>
+            <td><input type="text" class="code" id="gf_bb_salesforce_saltstring" name="gf_bb_salesforce_saltstring" size="40" value="<?php echo !empty($settings["salt_string"]) ? esc_attr($settings["salt_string"]) : ''; ?>" /></td>
+        </tr>
+        <tr>
             <td colspan="2"><input type="submit" name="gf_salesforce_submit" class="button-primary" value="<?php _e("Save Settings", "gravity-forms-bb-salesforce") ?>" /></td>
         </tr>
     </table>
     <div></div>
+    <script type="text/javascript">
+        function ToggleLoginEntry() {
+            if (jQuery('#gf_bb_salesforce_login').prop('checked'))
+                jQuery('.login_setting_row').show();
+            else
+            	jQuery('.login_setting_row').hide();
+        }
+        ToggleLoginEntry();
+    </script>
 </form>
 <form action="" method="post">
             <?php wp_nonce_field("uninstall", "gf_salesforce_uninstall")?>
@@ -344,21 +394,8 @@ EOD;
 <?php
     }
 
-    static private function api_is_valid($api) {
-        if ($api === false || is_string($api) || !empty($api->lastError)) {
-            return false;
-        }
-        if (is_a($api, 'SforcePartnerClient') && method_exists($api, 'getLastResponseHeaders') && preg_match('/200\sOK/ism', $api->getLastResponseHeaders())) {
-            return true;
-        }
-        return true;
-        return false;
-    }
-
     public static function BBSFapicall($url, $method, $data = null) {
         $settings = get_option("gf_bb_salesforce_settings");
-        $apiurl = self::$apiurl;
-        $apiurl = 'http://223.27.18.204:8080/';
         $apiurl = $settings['apiurl'];
         $rest = new RestRequest($apiurl . $url, $method, $data);
         $rest->execute();
@@ -368,36 +405,6 @@ EOD;
     }
 
     public static function get_api($settings = array()) {
-        //        if(!class_exists("SforcePartnerClient")) {
-        //            require_once plugin_dir_path(__FILE__).'developerforce/include/SforcePartnerClient.php';
-        //        }
-        //
-        //        // If it's already set, use it.
-        //        if(!empty(self::$api)) { return self::$api; }
-        //
-        //        if(!is_array($settings) || empty($settings)) {
-        //            $settings = self::$settings;
-        //            if(!is_array($settings) || empty($settings)) {
-        //                $settings = get_option("gf_bb_salesforce_settings");
-        //            }
-        //        }
-        //
-        //        if(!is_array($settings) || empty($settings)) {
-        //            return false;
-        //        }
-        //
-        //        extract($settings);
-        //
-        //        try {
-        //            //This is instantiating the service used for the sfdc api
-        //            $conn = new SforcePartnerClient();
-        //            $conn->createconnection(plugin_dir_path(__FILE__).'developerforce/include/partner.wsdl.xml');
-        //            $mylogin = $conn->login($username,$password.$securitytoken);
-        //            self::$api = apply_filters('gf_salesforce_connection', $conn);
-        //            return $conn;
-        //        } catch(Exception $e) {
-        //            return isset($e->faultstring) ? $e->faultstring : false;
-        //        }
         return true;
     }
 
@@ -453,11 +460,6 @@ EOD;
             }
             return $lists;
         }
-
-        //        $api = self::get_api();
-        //
-        //        if(!self::api_is_valid($api)) { return false; }
-
 
         $accountdescribe = json_decode(file_get_contents(self::$apiurl . 'meta/' . $objectType)); //$api->describeSObject($objectType);
         if (!is_object($accountdescribe) || !isset($accountdescribe->fields)) {
@@ -532,6 +534,87 @@ EOD;
         } catch (Exception $e) {
             return false;
         }
+    }
+
+    public static function login_via_salesforce($validation_result) {
+        if ($validation_result["is_valid"] == false)
+            return $validation_result;
+
+        $form = $validation_result["form"];
+        $fieldcnt = 0;
+        $wsun = null;
+        $username_field = self::$settings['login_username'];
+        $password_field = self::$settings['login_password'];
+        foreach ($form['fields'] as &$field) {
+            if ($field['type'] == 'text' && !$field['enablePasswordInput']) { // Username
+                $submitted_username = rgpost("input_{$field['id']}");
+
+                $fields = 'Id,AccountId,'.$username_field.','.$password_field.',FirstName,LastName';
+                if ($username_field != 'Email')
+                    $fields .= ',Email';
+                // First check contact
+                $testarray = array(
+                        'data' => array(
+                                    $username_field => $value,
+                                ),
+                        'fields' => $fields,
+                );
+                $queryy = http_build_query($testarray);
+                $body = GFBBSalesforce::BBSFapicall('/object/Contact?' . $queryy, "GET");
+                if (isset($body->records[0]->Id)) {
+                    $wsun = $body->records[0];
+                } else { // Login failed
+	                $validation_result["is_valid"] = false;
+	                $form["fields"][$fieldcnt]["failed_validation"] = true;
+	                $form["fields"][$fieldcnt]["validation_message"] = 'Username incorrect';
+
+	                $validation_result["form"] = $form;
+                }
+            }
+            if (!is_null($wsun) && $field['type'] == 'text' && $field['enablePasswordInput']) { // Password
+                $submitted_password = rgpost("input_{$field['id']}");
+
+                if ($wsun->$password_field != self::encrypt_password($submitted_password)) {
+                    $validation_result["is_valid"] = false;
+                    $form["fields"][$fieldcnt]["failed_validation"] = true;
+                    $form["fields"][$fieldcnt]["validation_message"] = 'Password Incorrect';
+
+                    $validation_result["form"] = $form;
+                } else {
+                    $wsun->logged = TRUE;
+                    $email = $wsun->Email;
+                	$user_id = email_exists($email);
+                	if($user_id) { // $email already exists in wp_users
+                		$user_info = get_userdata($user_id);
+                		$user_login = $user_info->user_login;
+                	} else { // $email does not exist in wp_users -> create user as $email
+                		$password = $wsun->$password_field;
+                		$user_login = $email;
+                		wp_create_user($user_login, $password, $email);
+                	}
+
+                	// set login variables
+                	$user = get_userdatabylogin($user_login);
+                	$user_id = $user->ID;
+
+                    // login as user
+                    wp_set_current_user($user_id, $user_login);
+                	wp_set_auth_cookie($user_id);
+                	do_action('wp_login', $user_login);
+                	if (!session_id()) // [MP] For some reason the session doesn't seem to exist yet
+                		session_start();
+                    $_SESSION['USER'] = $wsun;
+                }
+            }
+
+            $fieldcnt++;
+        }
+
+        return $validation_result;
+    }
+
+    private static function encrypt_password($password) {
+        return md5($password.self::$settings['salt_string']);
     }
 
     public static function add_permissions() {
