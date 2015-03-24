@@ -3,8 +3,8 @@
 Plugin Name: Gravity Forms BrownBox Salesforce API Add-On
 Plugin URI: http://brownbox.net.au
 Description: Integrates <a href="http://formplugin.com?r=salesforce">Gravity Forms</a> with Salesforce allowing form submissions to be automatically sent to your Salesforce account
-Version: 0.3.1
-Author: Brownbox
+Version: 0.3.2
+Author: Brown Box
 Author URI: http://brownbox.net.au
 
 ------------------------------------------------------------------------
@@ -761,16 +761,12 @@ EOD;
     	}
 
     	if (!empty($sfData)) {
+		    apply_filters('bb_sf_obj_ids', $objectIds, $sfData);
     		foreach ($sfData as $obj => $data) {
-    			if (array_key_exists($obj, $objectIds))
+    		    $objectIds[$obj] = apply_filters('bb_sf_obj_id_'.strtolower($obj), $objectIds[$obj] || null, $sfData[$obj]);
+    			if (!empty($objectIds[$obj]))
     				$sfData[$obj]['ID'] = $objectIds[$obj];
-
-    			if ($obj == 'Contact') { // Set some default values for contacts
-    				$sfData[$obj]['s360a__EmailAddressPreferredType__c'] = 'Personal';
-    				$sfData[$obj]['s360a__AddressPrimaryActive__c'] = 'boolean:TRUE';
-    				$sfData[$obj]['s360a__AddressPrimaryPreferredMailingAddress__c'] = 'boolean:TRUE';
-    				$sfData[$obj]['s360a__AddressPrimaryPreferredStreetAddress__c'] = 'boolean:TRUE';
-    			}
+    			$sfData[$obj] = apply_filters('bb_sf_data_'.strtolower($obj), $sfData[$obj]);
     		}
     		$result = self::update_salesforce($sfData);
     	}
