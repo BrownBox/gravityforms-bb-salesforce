@@ -3,7 +3,7 @@
 Plugin Name: Gravity Forms BrownBox Salesforce API Add-On
 Plugin URI: http://brownbox.net.au
 Description: Integrates <a href="http://formplugin.com?r=salesforce">Gravity Forms</a> with Salesforce allowing form submissions to be automatically sent to your Salesforce account
-Version: 0.3
+Version: 0.3.1
 Author: Brownbox
 Author URI: http://brownbox.net.au
 
@@ -261,7 +261,9 @@ EOD;
                             'login_form' => $_POST["gf_bb_salesforce_login_form"],
                             'login_username' => $_POST["gf_bb_salesforce_username"],
                             'login_password' => $_POST["gf_bb_salesforce_password"],
+                            'login_temp_password' => $_POST["gf_bb_salesforce_temp_password"],
                             'salt_string' => $_POST["gf_bb_salesforce_saltstring"],
+                            'sf_login_fallback' => isset($_POST["gf_bb_salesforce_login_fallback"]),
             );
             update_option("gf_bb_salesforce_settings", $settings);
         } else {
@@ -281,7 +283,9 @@ EOD;
                                                     'login_form' => '',
                                                     'login_username' => 'Email',
                                                     'login_password' => 'Website_Password__c',
+                                                    'login_temp_password' => '',
                                                     'salt_string' => substr("abcdefghijklmnopqrstuvwxyz", mt_rand(0, 25), 1).substr(md5(time()), 1, 9),
+                                                    'sf_login_fallback' => true,
         ));
 
         $api = self::get_api($settings);
@@ -336,7 +340,7 @@ EOD;
         </tr>
         <tr>
             <th scope="row"><label for="gf_bb_salesforce_login"><?php _e("Use Salesforce for Wordpress logins", "gravity-forms-bb-salesforce"); ?></label></th>
-            <td><input type="checkbox" id="gf_bb_salesforce_login" name="gf_bb_salesforce_login" size="40" value="1" <?php checked($settings["sf_login"], true); ?> onclick="ToggleLoginEntry();"><br>
+            <td><input type="checkbox" id="gf_bb_salesforce_login" name="gf_bb_salesforce_login" value="1" <?php checked($settings["sf_login"], true); ?> onclick="ToggleLoginEntry();">
             <span class="howto"><?php _e("Use a Gravity Form to allow users to log in from the front-end of the site using credentials stored in Salesforce. Admin login will still use the standard Wordpress login function.", "gravity-forms-bb-salesforce"); ?></span></td>
         </tr>
         <tr class="child_setting_row login_setting_row">
@@ -360,8 +364,17 @@ EOD;
             <td><input type="text" class="code" id="gf_salesforce_password" name="gf_bb_salesforce_password" size="40" value="<?php echo !empty($settings["login_password"]) ? esc_attr($settings["login_password"]) : ''; ?>" /></td>
         </tr>
         <tr class="child_setting_row login_setting_row">
+            <th scope="row"><label for="gf_bb_salesforce_temp_password"><?php _e("Salesforce Temp Password Field", "gravity-forms-bb-salesforce"); ?></label><span class="howto"><?php _e("(Leave blank if not using)", "gravity-forms-bb-salesforce"); ?></span></th>
+            <td><input type="text" class="code" id="gf_bb_salesforce_temp_password" name="gf_bb_salesforce_temp_password" size="40" value="<?php echo !empty($settings["login_temp_password"]) ? esc_attr($settings["login_temp_password"]) : ''; ?>" /></td>
+        </tr>
+        <tr class="child_setting_row login_setting_row">
             <th scope="row"><label for="gf_bb_salesforce_saltstring"><?php _e("Password Salt String", "gravity-forms-bb-salesforce"); ?></label><span class="howto"><?php _e("Changing this will INVALIDATE all current passwords in Salesforce. You probably really don't want to do that.", "gravity-forms-bb-salesforce"); ?></span></th>
             <td><input type="text" class="code" id="gf_bb_salesforce_saltstring" name="gf_bb_salesforce_saltstring" size="40" value="<?php echo !empty($settings["salt_string"]) ? esc_attr($settings["salt_string"]) : ''; ?>" /></td>
+        </tr>
+        <tr class="child_setting_row login_setting_row">
+            <th scope="row"><label for="gf_bb_salesforce_login_fallback"><?php _e("Fallback to regular WP login if Salesforce login fails?", "gravity-forms-bb-salesforce"); ?></label></th>
+            <td><input type="checkbox" id="gf_bb_salesforce_login_fallback" name="gf_bb_salesforce_login_fallback" value="1" <?php checked($settings["sf_login_fallback"], true); ?>>
+            <span class="howto"><?php _e("When this option is selected, in the case that the user's credentials are not successfully authenticated against Salesforce data the plugin will attempt to log the user in using the credentials stored in Wordpress instead.", "gravity-forms-bb-salesforce"); ?></span></td>
         </tr>
         <tr>
             <td colspan="2"><input type="submit" name="gf_salesforce_submit" class="button-primary" value="<?php _e("Save Settings", "gravity-forms-bb-salesforce") ?>" /></td>
@@ -545,6 +558,7 @@ EOD;
         $wsun = null;
         $username_field = self::$settings['login_username'];
         $password_field = self::$settings['login_password'];
+        $temp_password_field = self::$settings['login_temp_password'];
         foreach ($form['fields'] as &$field) {
             if ($field['type'] == 'text' && !$field['enablePasswordInput']) { // Username
                 $submitted_username = rgpost("input_{$field['id']}");
@@ -552,10 +566,13 @@ EOD;
                 $fields = 'Id,AccountId,'.$username_field.','.$password_field.',FirstName,LastName';
                 if ($username_field != 'Email')
                     $fields .= ',Email';
+                if (!empty($temp_password_field))
+                    $fields .= ','.$temp_password_field;
+                $fields = apply_filters('gfbbsf_login_fields', $fields);
                 // First check contact
                 $testarray = array(
                         'data' => array(
-                                    $username_field => $value,
+                                    $username_field => $submitted_username,
                                 ),
                         'fields' => $fields,
                 );
@@ -563,58 +580,105 @@ EOD;
                 $body = GFBBSalesforce::BBSFapicall('/object/Contact?' . $queryy, "GET");
                 if (isset($body->records[0]->Id)) {
                     $wsun = $body->records[0];
-                } else { // Login failed
-	                $validation_result["is_valid"] = false;
-	                $form["fields"][$fieldcnt]["failed_validation"] = true;
-	                $form["fields"][$fieldcnt]["validation_message"] = 'Username incorrect';
-
-	                $validation_result["form"] = $form;
                 }
             }
-            if (!is_null($wsun) && $field['type'] == 'text' && $field['enablePasswordInput']) { // Password
+            if ($field['type'] == 'text' && $field['enablePasswordInput']) { // Password
                 $submitted_password = rgpost("input_{$field['id']}");
 
-                if ($wsun->$password_field != self::encrypt_password($submitted_password)) {
-                    $validation_result["is_valid"] = false;
-                    $form["fields"][$fieldcnt]["failed_validation"] = true;
-                    $form["fields"][$fieldcnt]["validation_message"] = 'Password Incorrect';
-
-                    $validation_result["form"] = $form;
-                } else {
-                    $wsun->logged = TRUE;
-                    $email = $wsun->Email;
-                	$user_id = email_exists($email);
-                	if($user_id) { // $email already exists in wp_users
-                		$user_info = get_userdata($user_id);
-                		$user_login = $user_info->user_login;
-                	} else { // $email does not exist in wp_users -> create user as $email
-                		$password = $wsun->$password_field;
-                		$user_login = $email;
-                		wp_create_user($user_login, $password, $email);
-                	}
-
-                	// set login variables
-                	$user = get_userdatabylogin($user_login);
-                	$user_id = $user->ID;
-
-                    // login as user
-                    wp_set_current_user($user_id, $user_login);
-                	wp_set_auth_cookie($user_id);
-                	do_action('wp_login', $user_login);
-                	if (!session_id()) // [MP] For some reason the session doesn't seem to exist yet
-                		session_start();
-                    $_SESSION['USER'] = $wsun;
+                if (!is_null($wsun)) {
+                    // Check temp password first if configured
+                    if (!empty($temp_password_field) && !empty($wsun->$temp_password_field)) {
+                        if ($wsun->$temp_password_field == $submitted_password) {
+                            $wsun->pw_reset_required = true;
+                            self::login_user($wsun, $submitted_password);
+                        }
+                    } else {
+                        if ($wsun->$password_field == self::encrypt_password($submitted_password))
+                            self::login_user($wsun, $submitted_password);
+                    }
                 }
             }
 
             $fieldcnt++;
         }
 
+        if (!is_user_logged_in()) {
+            if (!self::login_via_wordpress($submitted_username, $submitted_password)) {
+                $validation_result["is_valid"] = false;
+                $form["fields"][$fieldcnt]["failed_validation"] = true;
+                $form["fields"][$fieldcnt]["validation_message"] = 'Username and/or Password Incorrect';
+
+                $validation_result["form"] = $form;
+            }
+        }
+
         return $validation_result;
     }
 
-    private static function encrypt_password($password) {
+    private static function login_via_wordpress($username, $password) {
+        if (self::$settings['sf_login_fallback']) {
+            // Salesforce login failed, try regular WP login
+            $creds = array();
+            $creds['user_login'] = $username;
+            $creds['user_password'] = $password;
+            $creds['remember'] = true;
+            $user = wp_signon($creds, false);
+            return !is_wp_error($user);
+        }
+        return false;
+    }
+
+    public static function encrypt_password($password) {
         return md5($password.self::$settings['salt_string']);
+    }
+
+    private static function login_user($wsun, $password) {
+        $wsun->logged = TRUE;
+        $email = $wsun->Email;
+        $user_id = email_exists($email);
+        if($user_id) { // $email already exists in wp_users
+            $user_info = get_userdata($user_id);
+            $user_login = $user_info->user_login;
+        } else { // $email does not exist in wp_users -> create user as $email
+            $user_login = $email;
+            wp_create_user($user_login, $password, $email);
+        }
+
+        // set login variables
+        $user = get_userdatabylogin($user_login);
+        $user_id = $user->ID;
+
+        // login as user
+        wp_set_current_user($user_id, $user_login);
+        wp_set_auth_cookie($user_id);
+        do_action('wp_login', $user_login);
+        if (!session_id()) // [MP] For some reason the session doesn't seem to exist yet
+            session_start();
+        $_SESSION['USER'] = $wsun;
+        do_action('gfbbsf_login', $user_login);
+    }
+
+    public static function reset_password($email) {
+        $testarray = array(
+                'data' => array(
+                            'Email' => $email,
+                        ),
+                'fields' => 'Id',
+        );
+        $queryy = http_build_query($testarray);
+        $body = GFBBSalesforce::BBSFapicall('/object/Contact?' . $queryy, "GET");
+        if (isset($body->records[0]->Id)) {
+            $contact = $body->records[0];
+            $new_password = substr("abcdefghijklmnopqrstuvwxyz", mt_rand(0, 25), 1).substr(md5(time()), 1, 9);
+            $data = array(
+                    'Contact' => array(
+                            'ID' => $contact->Id,
+                            self::$settings['login_temp_password'] => $new_password,
+                            self::$settings['login_password'] => '',
+                    ),
+            );
+            self::update_salesforce($data);
+        }
     }
 
     public static function add_permissions() {
