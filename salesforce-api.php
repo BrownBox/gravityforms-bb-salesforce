@@ -3,7 +3,7 @@
 Plugin Name: Gravity Forms BrownBox Salesforce API Add-On
 Plugin URI: http://brownbox.net.au
 Description: Integrates <a href="http://formplugin.com?r=salesforce">Gravity Forms</a> with Salesforce allowing form submissions to be automatically sent to your Salesforce account
-Version: 0.3.2
+Version: 0.3.3
 Author: Brown Box
 Author URI: http://brownbox.net.au
 
@@ -96,7 +96,7 @@ class GFBBSalesforce {
 
         //handling post submission.
 //         add_action("gform_after_submission", array('GFBBSalesforce', 'export'), 10, 2);
-        add_action("gform_after_submission", array('GFBBSalesforce', 'send_to_salesforce'), 10, 2);
+        add_action("gform_after_submission", array('GFBBSalesforce', 'send_to_salesforce'), 1, 2);
 
         add_action('gform_entry_info', array('GFBBSalesforce', 'entry_info_link_to_salesforce'), 10, 2);
 
@@ -737,6 +737,7 @@ EOD;
     public static function send_to_salesforce($entry, $form) {
         $objectIds = array();
     	$sfData = array();
+    	$additionalContactData = array();
     	foreach ($form['fields'] as $field) {
     		if ($field['salesforceMapEnabled']) {
     			$sfFields = $field['salesforceMapField'];
@@ -746,8 +747,8 @@ EOD;
     			if (!empty($field['inputs'])) {
     				$values = array();
     				foreach ($field['inputs'] as $input) {
-    					if (!empty($entry[$input['id']]))
-    						$values[] = $entry[$input['id']];
+    					if (!empty($entry[(string)$input['id']]))
+    						$values[] = $entry[(string)$input['id']];
     				}
     				$post_data = implode(';',$values);
     			} else
@@ -757,10 +758,29 @@ EOD;
     			    foreach ($sfFields as $sfField)
     				    $sfData[$field['salesforceMapObject']][$sfField] = $post_data;
     			}
+    		} else { // Hack to manage complex fields
+	            $inputs = $field['inputs'];
+    		    switch ($field['type']) {
+    		        case 'name':
+    		            $additionalContactData['FirstName'] = $entry[(string)$inputs[1]['id']];
+    		            $additionalContactData['LastName'] = $entry[(string)$inputs[3]['id']];
+    		            break;
+    		        case 'address':
+    		            $additionalContactData['MailingStreet'] = $entry[(string)$inputs[0]['id']].' '.$entry[(string)$inputs[1]['id']];
+    		            $additionalContactData['MailingCity'] = $entry[(string)$inputs[2]['id']];
+    		            $additionalContactData['MailingState'] = $entry[(string)$inputs[3]['id']];
+    		            $additionalContactData['MailingPostalCode'] = $entry[(string)$inputs[4]['id']];
+    		            $additionalContactData['MailingCountry'] = $entry[(string)$inputs[5]['id']];
+    		            break;
+    		    }
     		}
     	}
 
     	if (!empty($sfData)) {
+    	    // Bring in the extra contact data
+    	    if (!empty($sfData['Contact']) && !empty($additionalContactData))
+    	        $sfData['Contact'] = array_merge($sfData['Contact'], $additionalContactData);
+
 		    apply_filters('bb_sf_obj_ids', $objectIds, $sfData);
     		foreach ($sfData as $obj => $data) {
     		    $objectIds[$obj] = apply_filters('bb_sf_obj_id_'.strtolower($obj), $objectIds[$obj] || null, $sfData[$obj]);
